@@ -58,8 +58,9 @@ export function extractApiToken(req: Request): string | undefined {
 }
 
 // Sticky sessions: track which model served each "session"
-// Key: hash of first user message → model_db_id
+// Key: <api_key>:<session_hash> → model_db_id
 // This prevents model switching mid-conversation which causes hallucination
+const stickySessionEnabled = process.env.STICKY_SESSION_ENABLED === 'true';
 const stickySessionMap = new Map<string, { modelDbId: number; lastUsed: number }>();
 const STICKY_TTL_MS = 30 * 60 * 1000; // 30 min session TTL
 
@@ -85,8 +86,20 @@ function getSessionKey(messages: ChatMessage[], sessionIdHeader?: string): strin
   return crypto.createHash('sha1').update(text).digest('hex');
 }
 
+function getSessionKeyWithApiKey(apiKey: string | undefined, messages: ChatMessage[], sessionIdHeader?: string): string {
+  // When sticky sessions are enabled, include the API key in the session key
+  // to make sessions per-API-key instead of global.
+  const sessionKey = getSessionKey(messages, sessionIdHeader);
+  if (!sessionKey) return '';
+  if (!apiKey) return sessionKey;
+  return `${apiKey}:${sessionKey}`;
+}
+
 export function getStickyModel(messages: ChatMessage[], sessionIdHeader?: string): number | undefined {
   // Only apply sticky for multi-turn (has assistant messages = continuation)
+  // Skip if sticky sessions are disabled
+  if (!stickySessionEnabled) return undefined;
+
   const hasAssistant = messages.some(m => m.role === 'assistant');
   if (!hasAssistant) return undefined;
 
@@ -104,6 +117,9 @@ export function getStickyModel(messages: ChatMessage[], sessionIdHeader?: string
 }
 
 export function setStickyModel(messages: ChatMessage[], modelDbId: number, sessionIdHeader?: string) {
+  // Only apply sticky if enabled
+  if (!stickySessionEnabled) return;
+
   const key = getSessionKey(messages, sessionIdHeader);
   if (!key) return;
   stickySessionMap.set(key, { modelDbId, lastUsed: Date.now() });
@@ -117,7 +133,7 @@ export function setStickyModel(messages: ChatMessage[], modelDbId: number, sessi
   }
 }
 
-// OpenAI-compatible /models endpoint (used by Hermes for metadata) 
+// OpenAI-compatible /models endpoint (used by Hermes for metadata)
 // shows API models which is linked by the user
 proxyRouter.get('/models', (req: Request, res: Response) => {
   const token = extractApiToken(req);
@@ -784,7 +800,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         hasImage,
         wantsTools,
         skipModels.size > 0 ? skipModels : undefined,
-        { pinMode: isPinned, oneRPM: inOneRPMMode },
+        { pinMode: isPinned, oneRPM: inOneRPMMode, stickySessionKey: sessionKey || undefined },
       );
     } catch (err: any) {
       // Pinned model has no more keys — enter 1 RPM mode.
