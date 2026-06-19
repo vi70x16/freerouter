@@ -14,9 +14,8 @@ interface RequestErrorEvent extends LiveEventBase { type: 'request.error'; error
 interface KeyExhaustedEvent extends LiveEventBase { type: 'routing.key_exhausted'; provider: string; keyId: number; model: string; reason: string; }
 interface KeyRetryEvent extends LiveEventBase { type: 'routing.key_retry'; provider: string; keyId: number; model: string; attempt: number; max: number; }
 interface ModelSwitchEvent extends LiveEventBase { type: 'routing.model_switch'; from: string; to: string; reason: string; }
-interface RecoveryEvent extends LiveEventBase { type: 'routing.recovery'; cycle: number; max: number | null; reason: string; }
 
-type LiveEvent = RequestStartEvent | RequestDoneEvent | RequestErrorEvent | KeyExhaustedEvent | KeyRetryEvent | ModelSwitchEvent | RecoveryEvent;
+type LiveEvent = RequestStartEvent | RequestDoneEvent | RequestErrorEvent | KeyExhaustedEvent | KeyRetryEvent | ModelSwitchEvent;
 
 interface LogEntry {
   id: string;
@@ -43,8 +42,6 @@ function formatEvent(evt: LiveEvent): LogEntry {
       return { id: evt.id, ts, kind: 'info', text: `↻ [${rId}] Retrying ${evt.provider}/${evt.model} key#${evt.keyId} (${evt.attempt}/${evt.max})` };
     case 'routing.model_switch':
       return { id: evt.id, ts, kind: 'info', text: `→ [${rId}] Switching model: ${evt.from} → ${evt.to}` };
-    case 'routing.recovery':
-      return { id: evt.id, ts, kind: 'info', text: `⏳ [${rId}] Recovery cycle ${evt.cycle}${evt.max ? `/${evt.max}` : '/∞'}: ${evt.reason}` };
   }
 }
 

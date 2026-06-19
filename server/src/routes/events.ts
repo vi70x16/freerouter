@@ -8,8 +8,8 @@ export const eventsRouter = Router();
  * GET /api/events — Server-Sent Events stream of live routing activity.
  *
  * The dashboard subscribes to this endpoint for real-time visibility into what
- * the proxy is doing: key exhaustions, retries, model switches, 1 RPM recovery
- * cycles, request successes/failures.
+ * the proxy is doing: key exhaustions, retries, model switches,
+ * request successes/failures.
  *
  * Auth: requires the dashboard session cookie (same as other /api/* routes).
  * Up to 8 concurrent subscribers; oldest is evicted when the limit is hit.

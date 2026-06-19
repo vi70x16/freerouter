@@ -472,7 +472,6 @@ export default function FallbackPage() {
   const queryClient = useQueryClient()
   const [localEntries, setLocalEntries] = useState<FallbackEntry[] | null>(null)
   const [editingModel, setEditingModel] = useState<Row | null>(null)
-  const [pendingRetryLimit, setPendingRetryLimit] = useState<number | null>(null)
   const [pendingModelEdits, setPendingModelEdits] = useState<Map<number, Record<string, unknown>>>(new Map())
 
   const { data: entries = [], isLoading } = useQuery<FallbackEntry[]>({
@@ -514,13 +513,6 @@ export default function FallbackPage() {
       apiFetch('/api/fallback/routing', { method: 'PUT', body: JSON.stringify(payload) }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['fallback', 'routing'] }),
   })
-
-  const { data: retryLimitData } = useQuery<{ limit: number }>({
-    queryKey: ['fallback', 'retry-limit'],
-    queryFn: () => apiFetch('/api/fallback/retry-limit'),
-  })
-
-  const globalRetryLimit = retryLimitData?.limit ?? 5
 
   const strategy: RoutingStrategy = routing?.strategy ?? 'balanced'
   const isManual = strategy === 'priority'
@@ -609,22 +601,15 @@ export default function FallbackPage() {
     setLocalEntries(allEntries.map(e => (e.keyCount > 0 ? { ...e, enabled } : e)))
   }
 
-  const activeRetryLimit = pendingRetryLimit ?? globalRetryLimit
-  const hasChanges = localEntries !== null || pendingModelEdits.size > 0 || pendingRetryLimit !== null
+  const hasChanges = localEntries !== null || pendingModelEdits.size > 0
 
   async function handleSaveAll() {
     // Snapshot pending state before any API call so we can roll back on failure.
-    const backupRetryLimit = pendingRetryLimit
     const backupModelEdits = new Map(pendingModelEdits)
     const backupLocalEntries = localEntries
     const saved: string[] = []
 
     try {
-      // Save retry limit
-      if (pendingRetryLimit !== null) {
-        await apiFetch('/api/fallback/retry-limit', { method: 'PUT', body: JSON.stringify({ limit: pendingRetryLimit }) })
-        saved.push('retry limit')
-      }
       // Save model edits
       if (pendingModelEdits.size > 0) {
         for (const [id, body] of pendingModelEdits) {
@@ -658,16 +643,13 @@ export default function FallbackPage() {
         saved.push('sort order')
       }
       // All API calls succeeded — clear pending state and invalidate caches.
-      setPendingRetryLimit(null)
       setPendingModelEdits(new Map())
       setLocalEntries(null)
       queryClient.invalidateQueries({ queryKey: ['fallback'] })
-      queryClient.invalidateQueries({ queryKey: ['fallback', 'retry-limit'] })
       queryClient.invalidateQueries({ queryKey: ['fallback', 'routing'] })
       queryClient.invalidateQueries({ queryKey: ['models'] })
     } catch (err) {
       // Partial failure — restore pending state so edits are not silently lost.
-      setPendingRetryLimit(backupRetryLimit)
       setPendingModelEdits(backupModelEdits)
       setLocalEntries(backupLocalEntries)
       throw err
@@ -679,7 +661,6 @@ export default function FallbackPage() {
   function handleDiscardAll() {
     setLocalEntries(null)
     setPendingModelEdits(new Map())
-    setPendingRetryLimit(null)
   }
 
   const [savingAll, setSavingAll] = useState(false)
@@ -789,41 +770,6 @@ export default function FallbackPage() {
               ? 'Manual mode: requests follow the order below, top-to-bottom. Drag to reorder.'
               : 'Scores update from live traffic. The order below is how requests are routed right now.'}
           </p>
-        </section>
-
-        {/* Global retry limit */}
-        <section className="rounded-3xl border bg-card p-5">
-          <div className="flex items-baseline justify-between mb-2">
-            <h2 className="text-sm font-medium">Exhaustion recovery</h2>
-            <span className="text-xs text-muted-foreground">
-              {globalRetryLimit === 0 ? '∞ infinite' : `${globalRetryLimit} cycle${globalRetryLimit > 1 ? 's' : ''}`}
-            </span>
-          </div>
-          <p className="text-xs text-muted-foreground mb-3">
-            When all keys for all enabled models are rate-limited, the proxy enters 1 RPM recovery mode.
-            Set how many recovery cycles before giving up (1–100), or 0 to keep retrying forever.
-          </p>
-          <div className="flex items-center gap-3">
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={activeRetryLimit}
-              onChange={e => setPendingRetryLimit(parseInt(e.target.value, 10))}
-              className="flex-1 h-1.5 rounded-full appearance-none bg-muted cursor-pointer accent-foreground"
-            />
-            <Input
-              type="number"
-              min={0}
-              max={100}
-              value={activeRetryLimit}
-              onChange={e => {
-                const v = parseInt(e.target.value, 10)
-                if (Number.isFinite(v) && v >= 0 && v <= 100) setPendingRetryLimit(v)
-              }}
-              className="w-20 text-center text-sm"
-            />
-          </div>
         </section>
 
         {/* Unified routing / fallback table */}
