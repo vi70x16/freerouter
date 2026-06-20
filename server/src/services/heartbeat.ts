@@ -34,6 +34,13 @@ function readConfig() {
   return { enabled: _enabled, intervalMs: _intervalMs!, activityWindowMs: _activityWindowMs! };
 }
 
+/** Reset the cached config (used in tests and after settings change). */
+export function resetHeartbeatConfig(): void {
+  _enabled = null;
+  _intervalMs = null;
+  _activityWindowMs = null;
+}
+
 // Hardcoded constants (not worth feature-settings entries)
 const PING_TIMEOUT_MS = parseInt(process.env.HEARTBEAT_TIMEOUT_MS ?? '10000', 10);
 const STAGGER_MS = parseInt(process.env.HEARTBEAT_STAGGER_MS ?? '2000', 10);

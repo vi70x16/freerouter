@@ -192,16 +192,22 @@ const PER_KEY_RETRIES = 3;
 
 // Provider-outage fast-fail: when ≥N distinct models on the same provider
 // return 5xx in one request, skip ALL models from that provider.
-// Threshold is read from feature-settings on first request (DB must be ready);
-// set to 0 to disable entirely.
+// Threshold is lazily evaluated on first use (DB must be ready by then);
+// set to 0 to disable entirely. Cached after first resolution.
 let _providerFastFailThreshold: number | null = null;
 function getProviderFastFailThreshold(): number {
   if (_providerFastFailThreshold === null) {
-    _providerFastFailThreshold = getFeatureSetting('provider_fastfail_enabled')
+    const enabled = getFeatureSetting('provider_fastfail_enabled');
+    _providerFastFailThreshold = enabled
       ? (getFeatureSetting('provider_fastfail_threshold') as number)
       : 0;
   }
   return _providerFastFailThreshold;
+}
+
+/** Reset the cached threshold (used in tests and after settings change). */
+export function resetProviderFastFailCache(): void {
+  _providerFastFailThreshold = null;
 }
 
 // Echo-tolerant tool calls: agents replay OUR responses back as history, and

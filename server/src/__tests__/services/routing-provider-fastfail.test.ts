@@ -82,6 +82,9 @@ describe('Provider-Outage Fast-Fail — skipModels integration', () => {
     setRoutingStrategy('priority');
     const db = getDb();
 
+    // Clear seeded fallback_config entries so only test fixtures are routable
+    db.prepare('DELETE FROM fallback_config').run();
+
     // Provider "bluesminds" with 2 models
     db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled) VALUES ('bluesminds', 'kimi-k2.6', 'Kimi K2.6', 1, 1, 1)").run();
     db.prepare("INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled) VALUES ('bluesminds', 'glm-5.1', 'GLM 5.1', 2, 2, 1)").run();

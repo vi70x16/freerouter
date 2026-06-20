@@ -3,21 +3,38 @@ import { Button } from '@/components/ui/button';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 
 // Mirrors server/src/services/events.ts LiveEvent union.
-interface LiveEventBase {
-  id?: string;
+// Events with a request-scoped `id` use RequestEventBase;
+// standalone events (heartbeat, stream) carry only `at`.
+interface RequestEventBase {
+  id: string;
   at: number;
 }
 
-interface RequestStartEvent extends LiveEventBase { type: 'request.start'; model?: string; stream: boolean; }
-interface RequestDoneEvent extends LiveEventBase { type: 'request.done'; model: string; provider: string; keyId: number; latencyMs: number; tokens?: { in: number; out: number }; }
-interface RequestErrorEvent extends LiveEventBase { type: 'request.error'; error: string; }
-interface KeyExhaustedEvent extends LiveEventBase { type: 'routing.key_exhausted'; provider: string; keyId: number; model: string; reason: string; }
-interface KeyRetryEvent extends LiveEventBase { type: 'routing.key_retry'; provider: string; keyId: number; model: string; attempt: number; max: number; }
-interface ModelSwitchEvent extends LiveEventBase { type: 'routing.model_switch'; from: string; to: string; reason: string; }
-interface ProviderFastFailEvent extends LiveEventBase { type: 'routing.provider_fastfail'; provider: string; failedModelCount: number; }
-interface HeartbeatPingEvent extends LiveEventBase { type: 'heartbeat.ping'; provider: string; model: string; success: boolean; latencyMs: number; error?: string; }
+interface TimestampOnly {
+  at: number;
+}
 
-type LiveEvent = RequestStartEvent | RequestDoneEvent | RequestErrorEvent | KeyExhaustedEvent | KeyRetryEvent | ModelSwitchEvent | ProviderFastFailEvent | HeartbeatPingEvent;
+interface RequestStartEvent extends RequestEventBase { type: 'request.start'; model?: string; stream: boolean; }
+interface RequestDoneEvent extends RequestEventBase { type: 'request.done'; model: string; provider: string; keyId: number; latencyMs: number; tokens?: { in: number; out: number }; }
+interface RequestErrorEvent extends RequestEventBase { type: 'request.error'; error: string; }
+interface RequestAbortedEvent extends RequestEventBase { type: 'request.aborted'; }
+interface KeyExhaustedEvent extends RequestEventBase { type: 'routing.key_exhausted'; provider: string; keyId: number; model: string; reason: string; }
+interface KeyRetryEvent extends RequestEventBase { type: 'routing.key_retry'; provider: string; keyId: number; model: string; attempt: number; max: number; }
+interface ModelSwitchEvent extends RequestEventBase { type: 'routing.model_switch'; from: string; to: string; reason: string; }
+interface ProviderFastFailEvent extends RequestEventBase { type: 'routing.provider_fastfail'; provider: string; failedModelCount: number; }
+interface HeartbeatPingEvent extends TimestampOnly { type: 'heartbeat.ping'; provider: string; model: string; success: boolean; latencyMs: number; error?: string; }
+interface HeartbeatCycleSkippedEvent extends TimestampOnly { type: 'heartbeat.cycle_skipped'; reason: string; lastActivityAgeMs: number; }
+interface StreamChunkEvent extends RequestEventBase { type: 'stream.chunk'; text: string; }
+
+type LiveEvent =
+  | RequestStartEvent | RequestDoneEvent | RequestErrorEvent | RequestAbortedEvent
+  | KeyExhaustedEvent | KeyRetryEvent | ModelSwitchEvent | ProviderFastFailEvent
+  | HeartbeatPingEvent | HeartbeatCycleSkippedEvent
+  | StreamChunkEvent;
+
+/** Exhaustive-check helper: assigning a LiveEvent to this type in a switch
+ *  default branch will cause a compile error if any variant is unhandled. */
+type ExhaustiveEventCheck = never;
 
 interface LogEntry {
   id: string | undefined;
@@ -30,29 +47,54 @@ const MAX_LOG_LINES = 200;
 
 function formatEvent(evt: LiveEvent): LogEntry | null {
   const ts = evt.at;
-  const rId = evt.id?.slice(0, 8) ?? '';
   switch (evt.type) {
-    case 'request.start':
+    case 'request.start': {
+      const rId = evt.id.slice(0, 8);
       return { id: evt.id, ts, kind: 'start', text: `▶ [${rId}] Request started${evt.model ? ` (pinned: ${evt.model})` : ' (auto)'} — ${evt.stream ? 'streaming' : 'non-stream'}` };
-    case 'request.done':
+    }
+    case 'request.done': {
+      const rId = evt.id.slice(0, 8);
       return { id: evt.id, ts, kind: 'done', text: `✓ [${rId}] ${evt.provider}/${evt.model} key#${evt.keyId} — ${evt.latencyMs}ms${evt.tokens ? `, ${evt.tokens.in}↓/${evt.tokens.out}↑ tokens` : ''}` };
-    case 'request.error':
+    }
+    case 'request.error': {
+      const rId = evt.id.slice(0, 8);
       return { id: evt.id, ts, kind: 'error', text: `✗ [${rId}] ${evt.error}` };
-    case 'routing.key_exhausted':
+    }
+    case 'request.aborted': {
+      const rId = evt.id.slice(0, 8);
+      return { id: evt.id, ts, kind: 'info', text: `⬛ [${rId}] Request aborted by client` };
+    }
+    case 'routing.key_exhausted': {
+      const rId = evt.id.slice(0, 8);
       return { id: evt.id, ts, kind: 'info', text: `⚠ [${rId}] Key #${evt.keyId} exhausted on ${evt.provider}/${evt.model}: ${evt.reason.slice(0, 80)}` };
-    case 'routing.key_retry':
+    }
+    case 'routing.key_retry': {
+      const rId = evt.id.slice(0, 8);
       return { id: evt.id, ts, kind: 'info', text: `↻ [${rId}] Retrying ${evt.provider}/${evt.model} key#${evt.keyId} (${evt.attempt}/${evt.max})` };
-    case 'routing.model_switch':
+    }
+    case 'routing.model_switch': {
+      const rId = evt.id.slice(0, 8);
       return { id: evt.id, ts, kind: 'info', text: `→ [${rId}] Switching model: ${evt.from} → ${evt.to}` };
-    case 'routing.provider_fastfail':
+    }
+    case 'routing.provider_fastfail': {
+      const rId = evt.id.slice(0, 8);
       return { id: evt.id, ts, kind: 'warn', text: `⚡ [${rId}] Provider ${evt.provider} fast-failed (${evt.failedModelCount} models down) — skipping remaining models` };
+    }
     case 'heartbeat.ping':
       if (evt.success) {
-        return { id: evt.id || 'hb', ts, kind: 'info', text: `♥ [heartbeat] ${evt.provider}/${evt.model} healthy (${evt.latencyMs}ms)` };
+        return { id: 'hb', ts, kind: 'info', text: `♥ [heartbeat] ${evt.provider}/${evt.model} healthy (${evt.latencyMs}ms)` };
       }
-      return { id: evt.id || 'hb', ts, kind: 'warn', text: `♥ [heartbeat] ${evt.provider}/${evt.model} FAILED: ${evt.error?.slice(0, 60) ?? 'unknown'}` };
-    default:
+      return { id: 'hb', ts, kind: 'warn', text: `♥ [heartbeat] ${evt.provider}/${evt.model} FAILED: ${evt.error?.slice(0, 60) ?? 'unknown'}` };
+    case 'heartbeat.cycle_skipped':
+      return null; // Intentionally not rendered (too noisy for live feed)
+    case 'stream.chunk':
+      return null; // Stream chunks are not rendered in the log feed
+    default: {
+      // Exhaustive check: if a new event type is added to LiveEvent but not
+      // handled above, the compiler will error here.
+      const _exhaustive: ExhaustiveEventCheck = evt;
       return null;
+    }
   }
 }
 

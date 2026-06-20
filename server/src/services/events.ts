@@ -22,6 +22,10 @@ export type LiveEvent =
   | { type: 'heartbeat.cycle_skipped'; reason: string; lastActivityAgeMs: number; at: number }
   | { type: 'stream.chunk'; id: string; text: string; at: number };
 
+/** Exhaustive-check helper: assign a `LiveEvent` to this and the compiler
+ *  will error if any variant is unhandled. Use in switch-default branches. */
+export type ExhaustiveEventCheck = never;
+
 const MAX_SUBSCRIBERS = 8;
 
 // Each subscriber gets its own ring buffer so a slow reader never blocks others.
