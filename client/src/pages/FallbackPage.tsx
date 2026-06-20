@@ -378,7 +378,7 @@ function RowContent({
             </span>
           )}
           {(row.penalty ?? 0) > 0 && (
-            <span className="text-[10px] text-amber-600 dark:text-amber-400">−{row.penalty} penalty</span>
+            <span className="text-[10px] text-amber-600 dark:text-amber-400">−{Math.round(row.penalty)} penalty</span>
           )}
           {row.totalRequests !== undefined && row.totalRequests > 0 && (
             <span className="text-[10px] text-muted-foreground/60 tabular-nums">{row.totalRequests} obs</span>
@@ -396,7 +396,7 @@ function RowContent({
         <div className="flex flex-col gap-1">
           <div className="text-xs font-mono text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
             {row.actualTokPerSec !== undefined && row.actualTokPerSec > 0
-              ? `${row.actualTokPerSec.toFixed(1)} tok/s real`
+              ? `${Math.round(row.actualTokPerSec)} tok/s real`
               : row.totalRequests !== undefined && row.totalRequests > 0
                 ? `${(row.successRate ?? 0).toFixed(0)}% success`
                 : 'No data'
@@ -411,7 +411,7 @@ function RowContent({
                 {Math.round((row.speed ?? 0) * 100)}
               </span>
               {row.actualAvgTtfbMs && (
-                <span className="text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">{row.actualAvgTtfbMs}ms ttfb</span>
+                <span className="text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">{Math.round(row.actualAvgTtfbMs)}ms ttfb</span>
               )}
             </div>
           </div>
@@ -419,10 +419,10 @@ function RowContent({
       </td>
       <td className="py-2 pr-3 align-middle"><AxisBar value={row.intelligence} color="#a855f7" /></td>
       <td className="py-2 pr-3 align-middle font-mono text-[11px] text-muted-foreground tabular-nums opacity-0 group-hover:opacity-100 transition-opacity">
-        {guard < 0.999 ? `×${guard.toFixed(2)}` : '—'}
+        {guard < 0.999 ? `×${Math.round(guard * 100) / 100}` : '—'}
       </td>
       <td className="py-2 pr-3 align-middle text-right font-mono text-xs font-medium tabular-nums opacity-0 group-hover:opacity-100 transition-opacity">
-        {row.score !== undefined ? row.score.toFixed(3) : '–'}
+        {row.score !== undefined ? Math.round(row.score) : '–'}
       </td>
       <td className="py-2 pr-3 align-middle text-right">
         <div className="flex items-center gap-1 justify-end">
