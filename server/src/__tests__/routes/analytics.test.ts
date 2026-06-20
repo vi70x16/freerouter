@@ -193,6 +193,7 @@ describe('Analytics API', () => {
     it('excludes requests from providers with no keys (summary)', async () => {
       insertKey('haskey', 1);
       insertModel('haskey', 'm1');
+      insertFallbackConfig('haskey', 'm1', 1);
       insertTokensRequest('haskey', 'm1', 'success', 100, 100, '2026-05-29 11:00:00');
       insertTokensRequest('nokey', 'm1', 'success', 100, 100, '2026-05-29 11:00:00');
 
@@ -204,6 +205,7 @@ describe('Analytics API', () => {
     it('excludes requests from providers with only disabled keys (summary)', async () => {
       insertKey('disabled', 0);
       insertModel('disabled', 'm1');
+      insertFallbackConfig('disabled', 'm1', 1);
       insertTokensRequest('disabled', 'm1', 'success', 100, 100, '2026-05-29 11:00:00');
 
       const { body } = await request(app, '/api/analytics/summary?range=24h');
@@ -225,6 +227,7 @@ describe('Analytics API', () => {
     it('includes requests once a key is enabled', async () => {
       insertKey('late', 0);
       insertModel('late', 'm1');
+      insertFallbackConfig('late', 'm1', 1);
       insertTokensRequest('late', 'm1', 'success', 100, 100, '2026-05-29 11:00:00');
 
       const before = await request(app, '/api/analytics/summary?range=24h');
@@ -239,6 +242,7 @@ describe('Analytics API', () => {
     it('filters by-platform endpoint', async () => {
       insertKey('active', 1);
       insertModel('active', 'm1');
+      insertFallbackConfig('active', 'm1', 1);
       insertTokensRequest('active', 'm1', 'success', 100, 100, '2026-05-29 11:00:00');
       insertTokensRequest('inactive', 'm1', 'success', 100, 100, '2026-05-29 11:00:00');
 
@@ -252,6 +256,8 @@ describe('Analytics API', () => {
       insertKey('active', 1);
       insertModel('active', 'm1');
       insertModel('active', 'm2');
+      insertFallbackConfig('active', 'm1', 1);
+      insertFallbackConfig('active', 'm2', 1);
       insertTokensRequest('active', 'm1', 'success', 100, 100, '2026-05-29 11:00:00');
       insertTokensRequest('active', 'm2', 'success', 100, 100, '2026-05-29 11:00:00');
       insertTokensRequest('inactive', 'm1', 'success', 100, 100, '2026-05-29 11:00:00');
@@ -265,6 +271,7 @@ describe('Analytics API', () => {
     it('filters error-distribution endpoint', async () => {
       insertKey('active', 1);
       insertModel('active', 'm1');
+      insertFallbackConfig('active', 'm1', 1);
       insertErrorRequest('active', 'm1', '429 rate limit', '2026-05-29 11:00:00');
       insertErrorRequest('inactive', 'm1', '500 internal server', '2026-05-29 11:00:00');
 
@@ -277,6 +284,7 @@ describe('Analytics API', () => {
     it('filters timeline endpoint', async () => {
       insertKey('tlactive', 1);
       insertModel('tlactive', 'm1');
+      insertFallbackConfig('tlactive', 'm1', 1);
       insertTokensRequest('tlactive', 'm1', 'success', 100, 100, '2026-05-29 11:00:00');
       insertTokensRequest('tlinactive', 'm1', 'success', 100, 100, '2026-05-29 11:00:00');
 
@@ -290,6 +298,7 @@ describe('Analytics API', () => {
     it('filters errors endpoint', async () => {
       insertKey('erractive', 1);
       insertModel('erractive', 'm1');
+      insertFallbackConfig('erractive', 'm1', 1);
       insertErrorRequest('erractive', 'm1', '429 rate limit', '2026-05-29 11:00:00');
       insertErrorRequest('errinactive', 'm1', '500 internal server', '2026-05-29 11:00:00');
 
@@ -354,7 +363,7 @@ describe('Analytics API', () => {
       expect(rtRows[0].requests).toBe(1);
     });
 
-    it('disabled model on active platform does not affect by-platform', async () => {
+    it('by-platform excludes traffic from fallback-disabled models', async () => {
       insertKey('dm2', 1);
       insertModel('dm2', 'active-m2', 1);
       insertFallbackConfig('dm2', 'active-m2', 1);
@@ -367,8 +376,41 @@ describe('Analytics API', () => {
 
       const dm2Row = body.find((r: any) => r.platform === 'dm2');
       expect(dm2Row).toBeDefined();
-      // by-platform counts ALL requests for the active platform, including disabled-model requests
-      expect(dm2Row.requests).toBe(2);
+      // by-platform now only counts requests for fallback-enabled models
+      expect(dm2Row.requests).toBe(1);
+    });
+
+    it('by-model request counts match summary total', async () => {
+      insertKey('cons', 1);
+      insertModel('cons', 'fc-on', 1);
+      insertFallbackConfig('cons', 'fc-on', 1);
+      insertModel('cons', 'fc-off', 1);
+      insertFallbackConfig('cons', 'fc-off', 0);
+      // 10 requests for fallback-enabled model, 5 for disabled
+      for (let i = 0; i < 10; i++) {
+        insertTokensRequest('cons', 'fc-on', 'success', 10, 20, '2026-05-29 11:00:00');
+      }
+      for (let i = 0; i < 5; i++) {
+        insertTokensRequest('cons', 'fc-off', 'success', 10, 20, '2026-05-29 11:00:00');
+      }
+
+      const byModel = await request(app, '/api/analytics/by-model?range=24h');
+      const summary = await request(app, '/api/analytics/summary?range=24h');
+      const byPlatform = await request(app, '/api/analytics/by-platform?range=24h');
+
+      // by-model should only show fc-on with 10 requests
+      const consRows = byModel.body.filter((r: any) => r.platform === 'cons');
+      expect(consRows).toHaveLength(1);
+      expect(consRows[0].modelId).toBe('fc-on');
+      expect(consRows[0].requests).toBe(10);
+
+      // summary total should match (10, not 15)
+      expect(summary.body.totalRequests).toBe(10);
+
+      // by-platform should show cons with 10 requests
+      const consPlatform = byPlatform.body.find((r: any) => r.platform === 'cons');
+      expect(consPlatform).toBeDefined();
+      expect(consPlatform.requests).toBe(10);
     });
 
     it('excludes model disabled in fallback but enabled in models table', async () => {

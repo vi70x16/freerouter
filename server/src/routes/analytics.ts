@@ -51,6 +51,20 @@ function buildPlatformFilter(
   };
 }
 
+/**
+ * Returns the SQL fragments for the models + fallback_config enabled filter.
+ * Appends LEFT JOINs to requests r and AND conditions to the WHERE clause.
+ * No bind params — the JOINs link via m.id, not user input.
+ */
+function buildModelEnabledFilter() {
+  return {
+    joinSql: `LEFT JOIN models m ON m.platform = r.platform AND m.model_id = r.model_id
+      LEFT JOIN fallback_config fc ON fc.model_db_id = m.id`,
+    whereSql: `AND (m.enabled IS NULL OR m.enabled = 1)
+      AND (fc.enabled IS NULL OR fc.enabled = 1)`,
+  };
+}
+
 interface SummaryResponse {
   totalRequests: number; successRate: number;
   totalInputTokens: number; totalOutputTokens: number;
@@ -75,6 +89,7 @@ analyticsRouter.get('/summary', (req: Request, res: Response) => {
   const active = getActivePlatforms(db);
   if (active.length === 0) return res.json(EMPTY_SUMMARY);
   const pf = buildPlatformFilter(active, 'r');
+  const mf = buildModelEnabledFilter();
 
   const stats = db.prepare(`
     SELECT
@@ -86,8 +101,10 @@ analyticsRouter.get('/summary', (req: Request, res: Response) => {
       SUM(CASE WHEN r.requested_model IS NOT NULL THEN 1 ELSE 0 END) as pinned_count,
       SUM(CASE WHEN r.requested_model = r.model_id THEN 1 ELSE 0 END) as pin_honored_count
     FROM requests r
+    ${mf.joinSql}
     WHERE r.created_at >= ?
       ${pf.sql}
+      ${mf.whereSql}
   `).get(since, ...pf.params) as any;
 
   const totalRequests = stats.total_requests ?? 0;
@@ -116,6 +133,7 @@ analyticsRouter.get('/by-model', (req: Request, res: Response) => {
   const active = getActivePlatforms(db);
   if (active.length === 0) return res.json([]);
   const pf = buildPlatformFilter(active, 'r');
+  const mf = buildModelEnabledFilter();
 
   const rows = db.prepare(`
     SELECT
@@ -129,12 +147,10 @@ analyticsRouter.get('/by-model', (req: Request, res: Response) => {
       SUM(r.output_tokens) as total_output_tokens,
       SUM(CASE WHEN r.requested_model = r.model_id THEN 1 ELSE 0 END) as pinned_requests
     FROM requests r
-    LEFT JOIN models m ON m.platform = r.platform AND m.model_id = r.model_id
-    LEFT JOIN fallback_config fc ON fc.model_db_id = m.id
+    ${mf.joinSql}
     WHERE r.created_at >= ?
       ${pf.sql}
-      AND (m.enabled IS NULL OR m.enabled = 1)
-      AND (fc.enabled IS NULL OR fc.enabled = 1)
+      ${mf.whereSql}
     GROUP BY r.platform, r.model_id
     ORDER BY requests DESC
   `).all(since, ...pf.params) as any[];
@@ -161,20 +177,23 @@ analyticsRouter.get('/by-platform', (req: Request, res: Response) => {
 
   const active = getActivePlatforms(db);
   if (active.length === 0) return res.json([]);
-  const pf = buildPlatformFilter(active);
+  const pf = buildPlatformFilter(active, 'r');
+  const mf = buildModelEnabledFilter();
 
   const rows = db.prepare(`
     SELECT
-      platform,
+      r.platform,
       COUNT(*) as requests,
-      SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as success_rate,
-      AVG(latency_ms) as avg_latency_ms,
-      SUM(input_tokens) as total_input_tokens,
-      SUM(output_tokens) as total_output_tokens
-    FROM requests
-    WHERE created_at >= ?
+      SUM(CASE WHEN r.status = 'success' THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as success_rate,
+      AVG(r.latency_ms) as avg_latency_ms,
+      SUM(r.input_tokens) as total_input_tokens,
+      SUM(r.output_tokens) as total_output_tokens
+    FROM requests r
+    ${mf.joinSql}
+    WHERE r.created_at >= ?
       ${pf.sql}
-    GROUP BY platform
+      ${mf.whereSql}
+    GROUP BY r.platform
     ORDER BY requests DESC
   `).all(since, ...pf.params) as any[];
 
@@ -197,21 +216,24 @@ analyticsRouter.get('/timeline', (req: Request, res: Response) => {
 
   const active = getActivePlatforms(db);
   if (active.length === 0) return res.json([]);
-  const pf = buildPlatformFilter(active);
+  const pf = buildPlatformFilter(active, 'r');
+  const mf = buildModelEnabledFilter();
 
   // dateFormat is a hardcoded whitelist — never user-controlled.
   const dateFormat = interval === 'hour' ? '%Y-%m-%dT%H:00:00' : '%Y-%m-%d';
 
   const rows = db.prepare(`
     SELECT
-      strftime('${dateFormat}', created_at) as timestamp,
+      strftime('${dateFormat}', r.created_at) as timestamp,
       COUNT(*) as requests,
-      SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
-      SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as failure_count
-    FROM requests
-    WHERE created_at >= ?
+      SUM(CASE WHEN r.status = 'success' THEN 1 ELSE 0 END) as success_count,
+      SUM(CASE WHEN r.status = 'error' THEN 1 ELSE 0 END) as failure_count
+    FROM requests r
+    ${mf.joinSql}
+    WHERE r.created_at >= ?
       ${pf.sql}
-    GROUP BY strftime('${dateFormat}', created_at)
+      ${mf.whereSql}
+    GROUP BY strftime('${dateFormat}', r.created_at)
     ORDER BY timestamp ASC
   `).all(since, ...pf.params) as any[];
 
@@ -235,28 +257,31 @@ analyticsRouter.get('/error-distribution', (req: Request, res: Response) => {
 
   const active = getActivePlatforms(db);
   if (active.length === 0) return res.json(EMPTY_ERROR_DIST);
-  const pf = buildPlatformFilter(active);
+  const pf = buildPlatformFilter(active, 'r');
+  const mf = buildModelEnabledFilter();
 
   // Group errors by category (extract the key part of the error message)
   const rows = db.prepare(`
     SELECT
-      platform,
-      model_id,
+      r.platform,
+      r.model_id,
       CASE
-        WHEN error LIKE '%429%' OR error LIKE '%rate limit%' OR error LIKE '%too many%' OR error LIKE '%quota%' THEN 'Rate Limited (429)'
-        WHEN error LIKE '%401%' OR error LIKE '%unauthorized%' OR error LIKE '%invalid.*key%' THEN 'Auth Error (401)'
-        WHEN error LIKE '%403%' OR error LIKE '%forbidden%' THEN 'Forbidden (403)'
-        WHEN error LIKE '%404%' OR error LIKE '%not found%' THEN 'Not Found (404)'
-        WHEN error LIKE '%timeout%' OR error LIKE '%ETIMEDOUT%' OR error LIKE '%ECONNREFUSED%' THEN 'Timeout/Connection'
-        WHEN error LIKE '%500%' OR error LIKE '%internal server%' THEN 'Server Error (500)'
-        WHEN error LIKE '%503%' OR error LIKE '%unavailable%' THEN 'Unavailable (503)'
+        WHEN r.error LIKE '%429%' OR r.error LIKE '%rate limit%' OR r.error LIKE '%too many%' OR r.error LIKE '%quota%' THEN 'Rate Limited (429)'
+        WHEN r.error LIKE '%401%' OR r.error LIKE '%unauthorized%' OR r.error LIKE '%invalid.*key%' THEN 'Auth Error (401)'
+        WHEN r.error LIKE '%403%' OR r.error LIKE '%forbidden%' THEN 'Forbidden (403)'
+        WHEN r.error LIKE '%404%' OR r.error LIKE '%not found%' THEN 'Not Found (404)'
+        WHEN r.error LIKE '%timeout%' OR r.error LIKE '%ETIMEDOUT%' OR r.error LIKE '%ECONNREFUSED%' THEN 'Timeout/Connection'
+        WHEN r.error LIKE '%500%' OR r.error LIKE '%internal server%' THEN 'Server Error (500)'
+        WHEN r.error LIKE '%503%' OR r.error LIKE '%unavailable%' THEN 'Unavailable (503)'
         ELSE 'Other'
       END as error_category,
       COUNT(*) as count
-    FROM requests
-    WHERE status = 'error' AND created_at >= ?
+    FROM requests r
+    ${mf.joinSql}
+    WHERE r.status = 'error' AND r.created_at >= ?
       ${pf.sql}
-    GROUP BY platform, error_category
+      ${mf.whereSql}
+    GROUP BY r.platform, error_category
     ORDER BY count DESC
   `).all(since, ...pf.params) as any[];
 
@@ -264,30 +289,34 @@ analyticsRouter.get('/error-distribution', (req: Request, res: Response) => {
   const byCategory = db.prepare(`
     SELECT
       CASE
-        WHEN error LIKE '%429%' OR error LIKE '%rate limit%' OR error LIKE '%too many%' OR error LIKE '%quota%' THEN 'Rate Limited (429)'
-        WHEN error LIKE '%401%' OR error LIKE '%unauthorized%' OR error LIKE '%invalid.*key%' THEN 'Auth Error (401)'
-        WHEN error LIKE '%403%' OR error LIKE '%forbidden%' THEN 'Forbidden (403)'
-        WHEN error LIKE '%404%' OR error LIKE '%not found%' THEN 'Not Found (404)'
-        WHEN error LIKE '%timeout%' OR error LIKE '%ETIMEDOUT%' OR error LIKE '%ECONNREFUSED%' THEN 'Timeout/Connection'
-        WHEN error LIKE '%500%' OR error LIKE '%internal server%' THEN 'Server Error (500)'
-        WHEN error LIKE '%503%' OR error LIKE '%unavailable%' THEN 'Unavailable (503)'
+        WHEN r.error LIKE '%429%' OR r.error LIKE '%rate limit%' OR r.error LIKE '%too many%' OR r.error LIKE '%quota%' THEN 'Rate Limited (429)'
+        WHEN r.error LIKE '%401%' OR r.error LIKE '%unauthorized%' OR r.error LIKE '%invalid.*key%' THEN 'Auth Error (401)'
+        WHEN r.error LIKE '%403%' OR r.error LIKE '%forbidden%' THEN 'Forbidden (403)'
+        WHEN r.error LIKE '%404%' OR r.error LIKE '%not found%' THEN 'Not Found (404)'
+        WHEN r.error LIKE '%timeout%' OR r.error LIKE '%ETIMEDOUT%' OR r.error LIKE '%ECONNREFUSED%' THEN 'Timeout/Connection'
+        WHEN r.error LIKE '%500%' OR r.error LIKE '%internal server%' THEN 'Server Error (500)'
+        WHEN r.error LIKE '%503%' OR r.error LIKE '%unavailable%' THEN 'Unavailable (503)'
         ELSE 'Other'
       END as category,
       COUNT(*) as count
-    FROM requests
-    WHERE status = 'error' AND created_at >= ?
+    FROM requests r
+    ${mf.joinSql}
+    WHERE r.status = 'error' AND r.created_at >= ?
       ${pf.sql}
+      ${mf.whereSql}
     GROUP BY category
     ORDER BY count DESC
   `).all(since, ...pf.params) as any[];
 
   // Errors by platform
   const byPlatform = db.prepare(`
-    SELECT platform, COUNT(*) as count
-    FROM requests
-    WHERE status = 'error' AND created_at >= ?
+    SELECT r.platform, COUNT(*) as count
+    FROM requests r
+    ${mf.joinSql}
+    WHERE r.status = 'error' AND r.created_at >= ?
       ${pf.sql}
-    GROUP BY platform
+      ${mf.whereSql}
+    GROUP BY r.platform
     ORDER BY count DESC
   `).all(since, ...pf.params) as any[];
 
@@ -306,14 +335,17 @@ analyticsRouter.get('/errors', (req: Request, res: Response) => {
 
   const active = getActivePlatforms(db);
   if (active.length === 0) return res.json([]);
-  const pf = buildPlatformFilter(active);
+  const pf = buildPlatformFilter(active, 'r');
+  const mf = buildModelEnabledFilter();
 
   const rows = db.prepare(`
-    SELECT id, platform, model_id, error, latency_ms, created_at
-    FROM requests
-    WHERE status = 'error' AND created_at >= ?
+    SELECT r.id, r.platform, r.model_id, r.error, r.latency_ms, r.created_at
+    FROM requests r
+    ${mf.joinSql}
+    WHERE r.status = 'error' AND r.created_at >= ?
       ${pf.sql}
-    ORDER BY created_at DESC
+      ${mf.whereSql}
+    ORDER BY r.created_at DESC
     LIMIT 50
   `).all(since, ...pf.params) as any[];
 
