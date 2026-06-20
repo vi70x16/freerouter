@@ -422,7 +422,7 @@ function RowContent({
         {guard < 0.999 ? `×${Math.round(guard * 100) / 100}` : '—'}
       </td>
       <td className="py-2 pr-3 align-middle text-right font-mono text-xs font-medium tabular-nums opacity-0 group-hover:opacity-100 transition-opacity">
-        {row.score !== undefined ? Math.round(row.score) : '–'}
+        {row.score !== undefined ? row.score.toFixed(2) : '–'}
       </td>
       <td className="py-2 pr-3 align-middle text-right">
         <div className="flex items-center gap-1 justify-end">
